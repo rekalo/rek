@@ -1,1249 +1,352 @@
-Структура проекта:
-text
-news_bot/
-├── main.py
-├── database.py
-├── parser.py
-├── telegram_api.py
-├── keyboards.py
-├── config.py
-└── utils.py
-1. config.py - Настройки и конфигурация
-python
-"""
-Конфигурация бота и настройки
-"""
+News Parser Bot - Документация
+📋 О проекте
+News Parser Bot - это Telegram бот для парсинга новостей с сайта itproger.com. Бот предоставляет удобный интерфейс для просмотра последних новостей, управления избранными статьями и получения статистики.
 
-# Настройки бота
-TOKEN = "8399667774:AAEYrsNonQW0t8wKZhhvAoLzr1BUbtH3WL4"
-BASE_URL = "api.telegram.org"
+🏗 Архитектура проекта
+Проект разделен на 4 основных модуля:
 
-# Настройки базы данных
-DB_NAME = 'news_bot.db'
+🔗 Системный анализ проекта
+Функциональные и нефункциональные требования
 
-# Настройки парсера
-ITPROGER_NEWS_URL = "https://itproger.com/news"
-CACHE_LIMIT = 10
-ARTICLES_PER_PAGE = 5
+Технические характеристики системы
 
-# Глобальные переменные для управления состоянием
-user_states = {}
-2. database.py - Работа с базой данных
-python
-"""
-Модуль для работы с базой данных SQLite
-"""
+Ограничения и возможности
 
-import sqlite3
-import datetime
-from config import DB_NAME
+🔗 План архитектуры системы
+Общая архитектура системы
 
-def init_database():
-    """
-    Инициализирует базу данных и создает таблицы
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        # Таблица пользователей
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT,
-                created_at TEXT,
-                last_activity TEXT
-            )
-        ''')
-        
-        # Таблица запросов
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                command TEXT,
-                timestamp TEXT,
-                FOREIGN KEY (user_id) REFERENCES users (user_id)
-            )
-        ''')
-        
-        # Таблица новостей (кеширование)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS news_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT UNIQUE,
-                description TEXT,
-                source_url TEXT,
-                article_link TEXT,
-                parsed_at TEXT
-            )
-        ''')
-        
-        # Таблица избранных новостей
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS favorites (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                news_title TEXT,
-                news_description TEXT,
-                news_link TEXT,
-                saved_at TEXT,
-                UNIQUE(user_id, news_title)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-        print("✅ База данных инициализирована")
-    except Exception as e:
-        print(f"❌ Ошибка инициализации БД: {e}")
+Компоненты и их взаимодействие
 
-def save_user(user_data):
-    """
-    Сохраняет или обновляет данные пользователя
-    
-    Args:
-        user_data (dict): Данные пользователя из Telegram
-    
-    Returns:
-        bool: True если успешно, False при ошибке
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        now = datetime.datetime.now().isoformat()
-        
-        cursor.execute('''
-            INSERT OR REPLACE INTO users 
-            (user_id, username, first_name, last_name, created_at, last_activity) 
-            VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM users WHERE user_id = ?), ?), ?)
-        ''', (
-            user_data['id'],
-            user_data.get('username'),
-            user_data.get('first_name'),
-            user_data.get('last_name'),
-            user_data['id'],
-            now,
-            now
-        ))
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка сохранения пользователя: {e}")
-        return False
+Схемы данных и потоков
 
-def log_request(user_id, command):
-    """
-    Логирует запрос пользователя
-    
-    Args:
-        user_id (int): ID пользователя
-        command (str): Текст команды
-    
-    Returns:
-        bool: True если успешно, False при ошибке
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO requests (user_id, command, timestamp)
-            VALUES (?, ?, ?)
-        ''', (user_id, command, datetime.datetime.now().isoformat()))
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка логирования запроса: {e}")
-        return False
+📁 Структура кода
+1. Модуль парсера новостей
+Назначение: Парсинг HTML и извлечение данных с itproger.com
 
-def save_news_to_cache(articles):
-    """
-    Сохраняет новости в кеш
-    
-    Args:
-        articles (list): Список статей для сохранения
-    
-    Returns:
-        bool: True если успешно, False при ошибке
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        now = datetime.datetime.now().isoformat()
-        
-        for article in articles:
-            if article.get('title'):
-                cursor.execute('''
-                    INSERT OR REPLACE INTO news_cache 
-                    (title, description, source_url, article_link, parsed_at)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (
-                    article.get('title'),
-                    article.get('description', 'Нет описания'),
-                    'https://itproger.com/news',
-                    article.get('link', 'https://itproger.com/news'),
-                    now
-                ))
-        
-        conn.commit()
-        conn.close()
-        print(f"✅ Сохранено {len(articles)} новостей в кеш")
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка сохранения в кеш: {e}")
-        return False
+Основные компоненты:
 
-def get_cached_news(limit=10):
-    """
-    Получает новости из кеша
-    
-    Args:
-        limit (int): Максимальное количество новостей
-    
-    Returns:
-        list: Список статей из кеша
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT title, description, article_link FROM news_cache 
-            WHERE title IS NOT NULL AND title != ''
-            ORDER BY parsed_at DESC 
-            LIMIT ?
-        ''', (limit,))
-        
-        articles = []
-        for row in cursor.fetchall():
-            articles.append({
-                'title': row[0],
-                'description': row[1],
-                'link': row[2] if row[2] else 'https://itproger.com/news'
-            })
-        
-        conn.close()
-        return articles
-    except Exception as e:
-        print(f"❌ Ошибка загрузки из кеша: {e}")
-        return []
+NewsParser - HTML парсер для извлечения статей
 
-def add_to_favorites(user_id, news_title, news_description, news_link):
-    """
-    Добавляет новость в избранное
-    
-    Args:
-        user_id (int): ID пользователя
-        news_title (str): Заголовок новости
-        news_description (str): Описание новости
-        news_link (str): Ссылка на новость
-    
-    Returns:
-        bool: True если успешно, False при ошибке
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        # Проверяем, есть ли уже такая новость в избранном
-        cursor.execute('SELECT COUNT(*) FROM favorites WHERE user_id = ? AND news_title = ?', (user_id, news_title))
-        exists = cursor.fetchone()[0]
-        
-        if exists:
-            print(f"⚠️ Новость уже в избранном: {news_title}")
-            return True
-        
-        # Добавляем новость в избранное
-        cursor.execute('''
-            INSERT INTO favorites (user_id, news_title, news_description, news_link, saved_at)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, news_title, news_description, news_link, datetime.datetime.now().isoformat()))
-        
-        conn.commit()
-        conn.close()
-        print(f"✅ Новость добавлена в избранное: {news_title}")
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка добавления в избранное: {e}")
-        return False
+fetch_url() - загрузка веб-страниц
 
-def remove_from_favorites(user_id, news_title):
-    """
-    Удаляет новость из избранного
-    
-    Args:
-        user_id (int): ID пользователя
-        news_title (str): Заголовок новости
-    
-    Returns:
-        bool: True если успешно, False при ошибке
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            DELETE FROM favorites 
-            WHERE user_id = ? AND news_title = ?
-        ''', (user_id, news_title))
-        
-        deleted_count = cursor.rowcount
-        conn.commit()
-        conn.close()
-        
-        if deleted_count > 0:
-            print(f"✅ Новость удалена из избранного: {news_title}")
-            return True
-        else:
-            print(f"⚠️ Новость не найдена в избранном: {news_title}")
-            return False
-    except Exception as e:
-        print(f"❌ Ошибка удаления из избранного: {e}")
-        return False
+parse_news() - основная функция парсинга
 
-def is_in_favorites(user_id, news_title):
-    """
-    Проверяет, есть ли новость в избранном
-    
-    Args:
-        user_id (int): ID пользователя
-        news_title (str): Заголовок новости
-    
-    Returns:
-        bool: True если новость в избранном, False если нет
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT COUNT(*) FROM favorites 
-            WHERE user_id = ? AND news_title = ?
-        ''', (user_id, news_title))
-        
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count > 0
-    except Exception as e:
-        print(f"❌ Ошибка проверки избранного: {e}")
-        return False
+normalize_url() - нормализация URL адресов
 
-def get_user_favorites(user_id):
-    """
-    Получает избранные новости пользователя
-    
-    Args:
-        user_id (int): ID пользователя
-    
-    Returns:
-        list: Список избранных новостей
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT news_title, news_description, news_link, saved_at FROM favorites 
-            WHERE user_id = ? 
-            ORDER BY saved_at DESC
-        ''', (user_id,))
-        
-        favorites = []
-        for row in cursor.fetchall():
-            favorites.append({
-                'title': row[0],
-                'description': row[1],
-                'link': row[2],
-                'saved_at': row[3]
-            })
-        
-        conn.close()
-        print(f"✅ Загружено {len(favorites)} избранных новостей для пользователя {user_id}")
-        return favorites
-    except Exception as e:
-        print(f"❌ Ошибка загрузки избранного: {e}")
-        return []
+Функциональность:
 
-def get_user_stats(user_id):
-    """
-    Получает статистику пользователя
-    
-    Args:
-        user_id (int): ID пользователя
-    
-    Returns:
-        dict: Статистика пользователя
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        # Количество запросов
-        cursor.execute('SELECT COUNT(*) FROM requests WHERE user_id = ?', (user_id,))
-        request_count = cursor.fetchone()[0]
-        
-        # Количество избранных
-        cursor.execute('SELECT COUNT(*) FROM favorites WHERE user_id = ?', (user_id,))
-        favorites_count = cursor.fetchone()[0]
-        
-        # Последняя активность
-        cursor.execute('SELECT last_activity FROM users WHERE user_id = ?', (user_id,))
-        last_activity_result = cursor.fetchone()
-        last_activity = last_activity_result[0] if last_activity_result else "Неизвестно"
-        
-        conn.close()
-        
-        return {
-            'request_count': request_count,
-            'favorites_count': favorites_count,
-            'last_activity': last_activity
-        }
-    except Exception as e:
-        print(f"❌ Ошибка получения статистики: {e}")
-        return {
-            'request_count': 0,
-            'favorites_count': 0,
-            'last_activity': "Ошибка"
-        }
-3. parser.py - Парсинг новостей
-python
-"""
-Модуль для парсинга новостей с сайта itProger
-"""
+Извлечение заголовков, описаний и ссылок на статьи
 
-from html.parser import HTMLParser
-import http.client
-import urllib.parse
-from config import ITPROGER_NEWS_URL
+Обработка относительных и абсолютных URL
 
-class NewsParser(HTMLParser):
-    """
-    Парсер HTML для извлечения новостей с сайта itProger
-    """
-    
-    def __init__(self):
-        super().__init__()
-        self.articles = []
-        self.current_article = {}
-        self.in_article = False
-        self.in_title = False
-        self.in_description = False
-        self.title_collected = False
-        self.description_collected = False
-        self.current_link = None
-        
-    def handle_starttag(self, tag, attrs):
-        """
-        Обрабатывает открывающие теги HTML
-        """
-        attrs_dict = dict(attrs)
-        
-        # Упрощенный парсинг для поиска новостей
-        if tag == 'div':
-            classes = attrs_dict.get('class', '')
-            if 'article' in classes or 'news' in classes or 'post' in classes:
-                self.in_article = True
-                self.current_article = {}
-                self.title_collected = False
-                self.description_collected = False
-                self.current_link = None
-            
-        elif tag == 'a' and self.in_article:
-            # Ищем ссылку на статью
-            href = attrs_dict.get('href', '')
-            if href and ('/news/' in href or '/article/' in href):
-                if not href.startswith('http'):
-                    href = 'https://itproger.com' + href
-                self.current_article['link'] = href
-            
-        elif tag in ['h3', 'h4', 'h2', 'span', 'div'] and self.in_article and not self.title_collected:
-            self.in_title = True
-                
-        elif tag in ['p', 'span', 'div'] and self.in_article and self.title_collected and not self.description_collected:
-            self.in_description = True
+Корректировка проблем со слэшами в путях
 
-    def handle_endtag(self, tag):
-        """
-        Обрабатывает закрывающие теги HTML
-        """
-        if tag == 'div' and self.in_article:
-            # Сохраняем статью если есть заголовок
-            if self.current_article and 'title' in self.current_article:
-                # Если нет ссылки, создаем базовую
-                if 'link' not in self.current_article:
-                    self.current_article['link'] = 'https://itproger.com/news'
-                self.articles.append(self.current_article.copy())
-            self.in_article = False
-            self.current_article = {}
-            self.in_title = False
-            self.in_description = False
-            
-        elif tag in ['h3', 'h4', 'h2', 'span', 'div'] and self.in_title:
-            self.in_title = False
-            self.title_collected = True
-            
-        elif tag in ['p', 'span', 'div'] and self.in_description:
-            self.in_description = False
-            self.description_collected = True
+2. Модуль базы данных
+Назначение: Работа с SQLite базой данных
 
-    def handle_data(self, data):
-        """
-        Обрабатывает текстовые данные внутри тегов
-        """
-        data = data.strip()
-        if not data:
-            return
-            
-        if self.in_title and self.in_article and not self.title_collected:
-            if len(data) > 10:  # Фильтруем короткие тексты
-                self.current_article['title'] = data
-                
-        elif self.in_description and self.in_article and not self.description_collected:
-            if len(data) > 20:  # Фильтруем короткие тексты
-                self.current_article['description'] = data
+Таблицы:
 
-def fetch_url(url):
-    """
-    Загружает HTML страницу
-    
-    Args:
-        url (str): URL для загрузки
-    
-    Returns:
-        str: HTML содержимое страницы или None при ошибке
-    """
-    try:
-        parsed = urllib.parse.urlparse(url)
-        conn = http.client.HTTPSConnection(parsed.netloc)
-        path = parsed.path
-        if parsed.query:
-            path += '?' + parsed.query
-            
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        }
-        
-        conn.request("GET", path, headers=headers)
-        response = conn.getresponse()
-        
-        if response.status == 200:
-            content = response.read()
-            return content.decode('utf-8', errors='ignore')
-        else:
-            print(f"❌ HTTP ошибка {response.status} для {url}")
-            return None
-    except Exception as e:
-        print(f"❌ Ошибка загрузки URL {url}: {e}")
-        return None
-
-def parse_news(html):
-    """
-    Парсит новости из HTML
-    
-    Args:
-        html (str): HTML содержимое страницы
-    
-    Returns:
-        list: Список распарсенных статей
-    """
-    try:
-        if not html:
-            return []
-            
-        parser = NewsParser()
-        parser.feed(html)
-        
-        # Фильтруем пустые статьи
-        valid_articles = []
-        for article in parser.articles:
-            if article.get('title') and len(article['title']) > 5:
-                # Убеждаемся, что есть описание
-                if 'description' not in article or not article['description']:
-                    article['description'] = 'Описание отсутствует'
-                valid_articles.append(article)
-        
-        print(f"✅ Спарсено {len(valid_articles)} новостей")
-        return valid_articles
-    except Exception as e:
-        print(f"❌ Ошибка парсинга: {e}")
-        return []
-
-def get_itproger_news(use_cache=True):
-    """
-    Получает новости с itproger.com/news
-    
-    Args:
-        use_cache (bool): Использовать кешированные данные
-    
-    Returns:
-        list: Список новостей
-    """
-    from database import get_cached_news, save_news_to_cache
-    
-    print("🔄 Получение новостей с itproger.com...")
-    
-    # Сначала пробуем кеш
-    if use_cache:
-        cached_news = get_cached_news(limit=10)
-        if cached_news:
-            print("✅ Используются кешированные новости")
-            return cached_news
-    
-    # Загружаем свежие новости
-    html = fetch_url(ITPROGER_NEWS_URL)
-    if html:
-        articles = parse_news(html)
-        if articles:
-            save_news_to_cache(articles)
-            return articles
-        else:
-            print("❌ Не удалось распарсить новости")
-    else:
-        print("❌ Не удалось загрузить страницу")
-    
-    # Если не удалось загрузить новые, используем кеш
-    cached_news = get_cached_news()
-    if cached_news:
-        print("⚠️ Используются кешированные данные из-за ошибки загрузки")
-        return cached_news    
-    else:
-        print("❌ Нет данных в кеше")
-        return []
-4. telegram_api.py - Работа с Telegram API
-python
-"""
-Модуль для работы с Telegram Bot API
-"""
-
-import http.client
-import json
-from config import TOKEN, BASE_URL
-
-def get_updates(offset=None):
-    """
-    Получает обновления от Telegram API
-    
-    Args:
-        offset (int): ID последнего полученного обновления
-    
-    Returns:
-        dict: Ответ от Telegram API
-    """
-    try:
-        conn = http.client.HTTPSConnection(BASE_URL)
-        url = f"/bot{TOKEN}/getUpdates?timeout=100"
-        if offset:
-            url += f"&offset={offset}"
-        
-        conn.request("GET", url, headers={'User-Agent': 'Mozilla/5.0'})
-        response = conn.getresponse()
-        
-        if response.status == 200:
-            data = response.read().decode('utf-8')
-            return json.loads(data)
-        else:
-            print(f"❌ HTTP ошибка: {response.status}")
-            return {"ok": False, "result": []}
-    except Exception as e:
-        print(f"❌ Ошибка получения обновлений: {e}")
-        return {"ok": False, "result": []}
-
-def send_message(chat_id, text, reply_markup=None, parse_mode='HTML'):
-    """
-    Отправляет сообщение пользователю
-    
-    Args:
-        chat_id (int): ID чата
-        text (str): Текст сообщения
-        reply_markup (dict): Клавиатура для сообщения
-        parse_mode (str): Режим парсинга ('HTML' или 'Markdown')
-    
-    Returns:
-        bytes: Ответ от Telegram API или None при ошибке
-    """
-    try:
-        # Ограничение длины сообщения для Telegram
-        if len(text) > 4096:
-            text = text[:4090] + "..."
-            
-        conn = http.client.HTTPSConnection(BASE_URL)
-        url = f"/bot{TOKEN}/sendMessage"
-        
-        params = {
-            'chat_id': chat_id,
-            'text': text,
-            'parse_mode': parse_mode
-        }
-        
-        if reply_markup:
-            params['reply_markup'] = reply_markup
-            
-        headers = {'Content-type': 'application/json'}
-        json_params = json.dumps(params, ensure_ascii=False)
-        
-        conn.request("POST", url, json_params.encode('utf-8'), headers)
-        response = conn.getresponse()
-        result = response.read()
-        
-        if response.status == 200:
-            return result
-        else:
-            print(f"❌ Ошибка отправки: {response.status}")
-            return None
-    except Exception as e:
-        print(f"❌ Ошибка отправки сообщения: {e}")
-        return None
-
-def edit_message(chat_id, message_id, text, reply_markup=None):
-    """
-    Редактирует существующее сообщение
-    
-    Args:
-        chat_id (int): ID чата
-        message_id (int): ID сообщения
-        text (str): Новый текст сообщения
-        reply_markup (dict): Новая клавиатура
-    
-    Returns:
-        bytes: Ответ от Telegram API или None при ошибке
-    """
-    try:
-        if len(text) > 4096:
-            text = text[:4090] + "..."
-            
-        conn = http.client.HTTPSConnection(BASE_URL)
-        url = f"/bot{TOKEN}/editMessageText"
-        
-        params = {
-            'chat_id': chat_id,
-            'message_id': message_id,
-            'text': text,
-            'parse_mode': 'HTML'
-        }
-        
-        if reply_markup:
-            params['reply_markup'] = reply_markup
-            
-        headers = {'Content-type': 'application/json'}
-        conn.request("POST", url, json.dumps(params), headers)
-        response = conn.getresponse()
-        result = response.read()
-        
-        if response.status == 200:
-            return result
-        else:
-            print(f"❌ Ошибка редактирования: {response.status}")
-            return None
-    except Exception as e:
-        print(f"❌ Ошибка редактирования сообщения: {e}")
-        return None
-5. keyboards.py - Создание клавиатур
-python
-"""
-Модуль для создания инлайн клавиатур
-"""
-
-from database import is_in_favorites
-from config import ARTICLES_PER_PAGE
-
-def format_article_response(article, index, total, user_id=None):
-    """
-    Форматирует одну статью для отображения с навигацией
-    
-    Args:
-        article (dict): Данные статьи
-        index (int): Текущий индекс
-        total (int): Общее количество статей
-        user_id (int): ID пользователя для проверки избранного
-    
-    Returns:
-        str: Отформатированный текст сообщения
-    """
-    title = article.get('title', 'Без заголовка')
-    description = article.get('description', 'Описание отсутствует')
-    link = article.get('link', 'https://itproger.com/news')
-    
-    response = f"📰 <b>Новость {index}/{total}</b>\n\n"
-    response += f"<b>{title}</b>\n\n"
-    response += f"<i>📝 {description}</i>\n\n"
-    
-    # Статус избранного
-    if user_id:
-        if is_in_favorites(user_id, title):
-            response += "⭐ <i>Добавлено в избранное</i>\n"
-        else:
-            response += "💫 <i>Не в избранном</i>\n"
-    
-    response += f"\n🔗 <a href='{link}'>Читать полную статью</a>"
-    
-    return response
-
-def create_navigation_keyboard(current_index, total_articles, user_id, current_article):
-    """
-    Создает клавиатуру навигации для статей
-    
-    Args:
-        current_index (int): Текущий индекс статьи
-        total_articles (int): Общее количество статей
-        user_id (int): ID пользователя
-        current_article (dict): Текущая статья
-    
-    Returns:
-        dict: Клавиатура для Telegram
-    """
-    keyboard = []
-    
-    # Кнопки навигации
-    nav_row = []
-    if current_index > 1:
-        nav_row.append({"text": "⬅️ Назад", "callback_data": f"nav_{current_index-1}"})
-    
-    if current_index < total_articles:
-        nav_row.append({"text": "Вперед ➡️", "callback_data": f"nav_{current_index+1}"})
-    
-    if nav_row:
-        keyboard.append(nav_row)
-    
-    # Кнопка избранного
-    is_favorite = is_in_favorites(user_id, current_article['title'])
-    favorite_text = "❌ Удалить из избранного" if is_favorite else "⭐ Добавить в избранное"
-    favorite_data = f"remove_fav_{current_index}" if is_favorite else f"add_fav_{current_index}"
-    keyboard.append([{"text": favorite_text, "callback_data": favorite_data}])
-    
-    # Кнопка перехода к статье
-    article_link = current_article.get('link', 'https://itproger.com/news')
-    keyboard.append([{"text": "🔗 Подробнее на сайте", "url": article_link}])
-    
-    # Кнопка возврата к списку
-    keyboard.append([{"text": "📋 К списку новостей", "callback_data": "back_to_list"}])
-    
-    return {"inline_keyboard": keyboard}
-
-def create_articles_list_keyboard(articles, page=0, articles_per_page=ARTICLES_PER_PAGE):
-    """
-    Создает клавиатуру для списка статей
-    
-    Args:
-        articles (list): Список статей
-        page (int): Текущая страница
-        articles_per_page (int): Количество статей на странице
-    
-    Returns:
-        dict: Клавиатура для Telegram
-    """
-    keyboard = []
-    
-    start_idx = page * articles_per_page
-    end_idx = start_idx + articles_per_page
-    current_articles = articles[start_idx:end_idx]
-    
-    # Кнопки статей
-    for i, article in enumerate(current_articles, start_idx + 1):
-        title = article.get('title', 'Без заголовка')
-        short_title = title[:30] + "..." if len(title) > 30 else title
-        keyboard.append([{"text": f"📰 {short_title}", "callback_data": f"article_{i}"}])
-    
-    # Кнопки навигации по страницам
-    nav_row = []
-    if page > 0:
-        nav_row.append({"text": "⬅️ Предыдущая", "callback_data": f"page_{page-1}"})
-    
-    if end_idx < len(articles):
-        nav_row.append({"text": "Следующая ➡️", "callback_data": f"page_{page+1}"})
-    
-    if nav_row:
-        keyboard.append(nav_row)
-    
-    return {"inline_keyboard": keyboard}
-6. handlers.py - Обработчики сообщений и callback'ов
-python
-"""
-Модуль для обработки сообщений и callback'ов
-"""
-
-from database import save_user, log_request, get_user_favorites, get_user_stats
-from database import add_to_favorites, remove_from_favorites, is_in_favorites
-from parser import get_itproger_news
-from keyboards import format_article_response, create_navigation_keyboard, create_articles_list_keyboard
-from telegram_api import send_message, edit_message
-from config import user_states
-
-def handle_callback_query(callback_query):
-    """
-    Обрабатывает callback от инлайн кнопок
-    
-    Args:
-        callback_query (dict): Данные callback от Telegram
-    """
-    try:
-        user_id = callback_query["from"]["id"]
-        chat_id = callback_query["message"]["chat"]["id"]
-        message_id = callback_query["message"]["message_id"]
-        data = callback_query["data"]
-        
-        print(f"🔄 Обработка callback: {data} от пользователя {user_id}")
-        
-        # Сохраняем пользователя
-        save_user(callback_query["from"])
-        
-        # Логируем запрос
-        log_request(user_id, f"callback:{data}")
-        
-        # Инициализируем состояние пользователя, если нужно
-        if user_id not in user_states:
-            user_states[user_id] = {"current_page": 0, "articles": [], "current_article_index": 0}
-        
-        user_state = user_states[user_id]
-        articles = user_state.get("articles", [])
-        
-        if not articles:
-            # Если нет статей, загружаем заново
-            articles = get_itproger_news()
-            user_state["articles"] = articles
-        
-        if data.startswith("nav_"):
-            # Навигация по статьям
-            article_index = int(data.split("_")[1]) - 1
-            
-            if 0 <= article_index < len(articles):
-                user_state["current_article_index"] = article_index
-                article = articles[article_index]
-                
-                response = format_article_response(article, article_index + 1, len(articles), user_id)
-                keyboard = create_navigation_keyboard(article_index + 1, len(articles), user_id, article)
-                
-                edit_message(chat_id, message_id, response, keyboard)
-            else:
-                send_message(chat_id, "❌ Ошибка навигации")
-        
-        elif data.startswith("article_"):
-            # Просмотр конкретной статьи
-            article_index = int(data.split("_")[1]) - 1
-            
-            if 0 <= article_index < len(articles):
-                user_state["current_article_index"] = article_index
-                article = articles[article_index]
-                
-                response = format_article_response(article, article_index + 1, len(articles), user_id)
-                keyboard = create_navigation_keyboard(article_index + 1, len(articles), user_id, article)
-                
-                edit_message(chat_id, message_id, response, keyboard)
-            else:
-                send_message(chat_id, "❌ Статья не найдена")
-        
-        elif data.startswith("page_"):
-            # Навигация по страницам списка
-            page = int(data.split("_")[1])
-            total_pages = (len(articles) + 4) // 5  # 5 статей на страницу
-            
-            if 0 <= page < total_pages:
-                user_state["current_page"] = page
-                
-                response = f"📰 <b>Страница {page + 1}</b>\nВыберите новость для подробного просмотра:"
-                keyboard = create_articles_list_keyboard(articles, page)
-                
-                edit_message(chat_id, message_id, response, keyboard)
-            else:
-                send_message(chat_id, "❌ Страница не найдена")
-        
-        elif data == "back_to_list":
-            # Возврат к списку новостей
-            page = user_state.get("current_page", 0)
-            
-            response = f"📰 <b>Страница {page + 1}</b>\nВыберите новость для подробного просмотра:"
-            keyboard = create_articles_list_keyboard(articles, page)
-            
-            edit_message(chat_id, message_id, response, keyboard)
-        
-        elif data == "refresh_news":
-            # Обновление новостей
-            new_articles = get_itproger_news()
-            user_state["articles"] = new_articles
-            user_state["current_page"] = 0
-            
-            response = f"📰 <b>Найдено {len(new_articles)} новостей</b>\nВыберите новость для подробного просмотра:"
-            keyboard = create_articles_list_keyboard(new_articles, 0)
-            
-            edit_message(chat_id, message_id, response, keyboard)
-        
-        elif data.startswith("add_fav_"):
-            # Добавление в избранное
-            parts = data.split("_")
-            article_index = int(parts[2]) - 1 if len(parts) >= 3 else int(parts[1]) - 1
-            
-            if 0 <= article_index < len(articles):
-                article = articles[article_index]
-                print(f"🔄 Добавление в избранное: {article['title']}")
-                
-                success = add_to_favorites(user_id, article['title'], article.get('description', ''), article.get('link', 'https://itproger.com/news'))
-                
-                if success:
-                    # Обновляем сообщение с новым статусом
-                    response = format_article_response(article, article_index + 1, len(articles), user_id)
-                    keyboard = create_navigation_keyboard(article_index + 1, len(articles), user_id, article)
-                    
-                    edit_message(chat_id, message_id, response, keyboard)
-                    # Отправляем подтверждение
-                    send_message(chat_id, f"✅ Новость добавлена в избранное!\n\n<b>{article['title']}</b>")
-                    
-                    # Проверяем, что действительно сохранилось в БД
-                    if is_in_favorites(user_id, article['title']):
-                        print(f"✅ Подтверждение: новость '{article['title']}' сохранена в БД")
-                    else:
-                        print(f"❌ Ошибка: новость не сохранилась в БД")
-                else:
-                    send_message(chat_id, "❌ Ошибка добавления в избранное")
-            else:
-                send_message(chat_id, "❌ Статья не найдена")
-        
-        elif data.startswith("remove_fav_"):
-            # Удаление из избранного
-            parts = data.split("_")
-            article_index = int(parts[2]) - 1 if len(parts) >= 3 else int(parts[1]) - 1
-            
-            if 0 <= article_index < len(articles):
-                article = articles[article_index]
-                print(f"🔄 Удаление из избранного: {article['title']}")
-                
-                success = remove_from_favorites(user_id, article['title'])
-                
-                if success:
-                    # Обновляем сообщение с новым статусом
-                    response = format_article_response(article, article_index + 1, len(articles), user_id)
-                    keyboard = create_navigation_keyboard(article_index + 1, len(articles), user_id, article)
-                    
-                    edit_message(chat_id, message_id, response, keyboard)
-                    # Отправляем подтверждение
-                    send_message(chat_id, f"✅ Новость удалена из избранного!\n\n<b>{article['title']}</b>")
-                else:
-                    send_message(chat_id, "❌ Ошибка удаления из избранного")
-            else:
-                send_message(chat_id, "❌ Статья не найдена")
-        
-        else:
-            send_message(chat_id, "❌ Неизвестная команда")
-            
-    except Exception as e:
-        print(f"❌ Ошибка обработки callback: {e}")
-        send_message(chat_id, "❌ Произошла ошибка при обработке запроса")
-
-def handle_message(message):
-    """
-    Обрабатывает текстовые сообщения от пользователя
-    
-    Args:
-        message (dict): Сообщение от Telegram
-    """
-    chat_id = message["chat"]["id"]
-    text = message["text"].strip()
-    user_info = message["from"]
-    
-    print(f"📨 Сообщение от {user_info.get('first_name', 'Unknown')} ({chat_id}): {text}")
-    
-    # Сохраняем пользователя
-    save_user(user_info)
-    
-    # Логируем запрос
-    log_request(user_info["id"], text)
-    
-    if text.startswith("http"):
-        # Обработка URL
-        if "itproger.com/news" in text:
-            from parser import fetch_url, parse_news, save_news_to_cache
-            html = fetch_url(text)
-            if html:
-                articles = parse_news(html)
-                if articles:
-                    save_news_to_cache(articles)
-                    # Сохраняем статьи в состоянии пользователя
-                    user_id = user_info["id"]
-                    if user_id not in user_states:
-                        user_states[user_id] = {"current_page": 0, "articles": [], "current_article_index": 0}
-                    user_states[user_id]["articles"] = articles
-                    user_states[user_id]["current_page"] = 0
-                    
-                    response = f"📰 <b>Найдено {len(articles)} новостей</b>\nВыберите новость для подробного просмотра:"
-                    keyboard = create_articles_list_keyboard(articles, 0)
-                    send_message(chat_id, response, keyboard)
-                else:
-                    send_message(chat_id, "❌ Не удалось найти статьи на странице")
-            else:
-                send_message(chat_id, "❌ Ошибка при загрузке страницы. Проверьте URL.")
-        else:
-            send_message(chat_id, "🔗 Я специализируюсь на парсинге itproger.com/news\nОтправьте ссылку на этот сайт или команду /news")
-            
-    elif text == "/start":
-        response = """👋 <b>Привет! Я бот для парсинга новостей itProger</b>
-
-📋 <b>Доступные команды:</b>
-/news - Получить последние новости с навигацией
-/favorites - Мои избранные новости
-/stats - Моя статистика
-/help - Показать справку
-
-🔗 <b>Или просто отправьте ссылку:</b>
-https://itproger.com/news"""
-        send_message(chat_id, response)
-        
-    elif text == "/news":
-        articles = get_itproger_news()
-        if articles:
-            # Сохраняем статьи в состоянии пользователя
-            user_id = user_info["id"]
-            if user_id not in user_states:
-                user_states[user_id] = {"current_page": 0, "articles": [], "current_article_index": 0}
-            user_states[user_id]["articles"] = articles
-            user_states[user_id]["current_page"] = 0
-            
-            response = f"📰 <b>Найдено {len(articles)} новостей</b>\nВыберите новость для подробного просмотра:"
-            keyboard = create_articles_list_keyboard(articles, 0)
-            send_message(chat_id, response, keyboard)
-        else:
-            send_message(chat_id, "❌ Не удалось загрузить новости. Попробуйте позже.")
-        
-    elif text == "/favorites":
-        favorites = get_user_favorites(user_info["id"])
-        if favorites:
-            # Сохраняем избранные в состоянии пользователя
-            user_id = user_info["id"]
-            if user_id not in user_states:
-                user_states[user_id] = {"current_page": 0, "articles": [], "current_article_index": 0}
-            
-            # Преобразуем избранные в формат статей
-            fav_articles = [{"title": fav['title'], "description": fav['description'], "link": fav.get('link', 'https://itproger.com/news')} for fav in favorites]
-            user_states[user_id]["articles"] = fav_articles
-            user_states[user_id]["current_page"] = 0
-            
-            response = f"⭐ <b>Ваши избранные новости ({len(favorites)})</b>\nВыберите новость для просмотра:"
-            keyboard = create_articles_list_keyboard(fav_articles, 0)
-            send_message(chat_id, response, keyboard)
-        else:
-            send_message(chat_id, "📝 У вас пока нет избранных новостей.\nИспользуйте команду /news чтобы добавить.")
-            
-    elif text == "/stats":
-        stats = get_user_stats(user_info["id"])
-        response = f"""📊 <b>Ваша статистика:</b>
-
-📨 Запросов к боту: {stats['request_count']}
-⭐ Избранных новостей: {stats['favorites_count']}
-🕐 Последняя активность: {stats['last_activity'][:16]}"""
-        send_message(chat_id, response)
-        
-    elif text == "/help":
-        response = """ℹ️ <b>Справка по боту</b>
-
-Этот бот парсит заголовки и описания статей с сайта itproger.com/news
-
-<b>Команды:</b>
-/start - Начать работу
-/news - Получить свежие новости с навигацией
-/favorites - Избранные новости
-/stats - Статистика
-/help - Эта справка
-
-<b>Управление:</b>
-• Используйте кнопки навигации для просмотра новостей
-• Добавляйте новости в избранное для быстрого доступа
-• Нажимайте "🔗 Подробнее" для перехода к полной статье
-• Просматривайте статистику использования"""
-        send_message(chat_id, response)
-            
-    else:
-        send_message(chat_id, """❌ Неизвестная команда
-
-📋 <b>Доступные команды:</b>
-/start - Начать работу
-/news - Получить новости itProger с навигацией
-/favorites - Избранные новости
-/stats - Статистика
-/help - Справка""")
-7. main.py - Главный файл приложения
-python
-"""
-Главный модуль бота для парсинга новостей itProger
-"""
-
-import time
-from database import init_database
-from telegram_api import get_updates
-from handlers import handle_message, handle_callback_query
-
-def main():
-    """
-    Основная функция бота
-    """
-    # Инициализация базы данных
-    init_database()
-    print("🤖 Бот запущен! Ожидание сообщений...")
-    offset = 0
-    
-    while True:
-        try:
-            updates = get_updates(offset)
-            
-            if updates.get("ok") and "result" in updates:
-                for update in updates["result"]:
-                    offset = update["update_id"] + 1
-                    
-                    if "message" in update and "text" in update["message"]:
-                        handle_message(update["message"])
-                    
-                    elif "callback_query" in update:
-                        handle_callback_query(update["callback_query"])
-            
-            time.sleep(1)
-            
-        except Exception as e:
-            print(f"❌ Ошибка в основном цикле: {e}")
-            time.sleep(5)
-
-if __name__ == "__main__":
-    main()
-Документация по коду:
-Архитектура проекта:
-main.py - Главный файл, запускает бота и основной цикл обработки
-
-config.py - Настройки бота, токены, константы
-
-database.py - Работа с SQLite базой данных
-
-parser.py - Парсинг новостей с сайта itProger
-
-telegram_api.py - Взаимодействие с Telegram Bot API
-
-keyboards.py - Создание инлайн клавиатур
-
-handlers.py - Обработчики сообщений и callback'ов
-
-Основные функции:
-Парсинг новостей - автоматическое извлечение заголовков, описаний и ссылок
-
-Кеширование - сохранение новостей в базе данных для быстрого доступа
-
-Избранное - пользователи могут сохранять понравившиеся новости
-
-Навигация - инлайн кнопки для перелистывания новостей
-
-Статистика - отслеживание активности пользователей
-
-База данных:
-users - информация о пользователях
+users - данные пользователей
 
 requests - история запросов
 
-news_cache - кеш новостей
+news_cache - кешированные новости
 
-favorites - избранные новости пользователей
+favorites - избранные статьи
 
+Основные функции:
+
+init_database() - инициализация БД
+
+save_user() - сохранение пользователей
+
+save_news_to_cache() - кеширование новостей
+
+Управление избранным (добавление/удаление)
+
+3. Модуль интерфейса бота
+Назначение: Взаимодействие с Telegram API
+
+Компоненты:
+
+send_message() - отправка сообщений
+
+create_*_keyboard() - создание инлайн-кнопок
+
+format_*_response() - форматирование ответов
+
+Работа с Telegram Bot API
+
+Функциональность:
+
+Инлайн-клавиатуры для навигации
+
+Форматирование текста (HTML)
+
+Обработка callback запросов
+
+4. Главный модуль бота
+Назначение: Основная логика приложения
+
+Основные функции:
+
+main() - главный цикл бота
+
+handle_callback_query() - обработка кнопок
+
+handle_user_message() - обработка команд
+
+Координация работы всех модулей
+
+🚀 Основные возможности
+Команды бота:
+/start - начать работу
+
+/news - получить свежие новости
+
+/favorites - избранные статьи
+
+/stats - статистика пользователя
+
+/help - справка
+
+Инлайн-кнопки:
+📰 Просмотр деталей статьи
+
+⭐ Добавление/удаление из избранного
+
+🔗 Прямые ссылки на статьи
+
+🔄 Обновление списка новостей
+
+📊 Управление избранным
+
+🛠 Технологии
+Python 3.x - основной язык
+
+SQLite - база данных
+
+Telegram Bot API - платформа
+
+HTMLParser - парсинг веб-страниц
+
+http.client - HTTP запросы
+
+📊 Особенности системы
+✅ Кеширование новостей для снижения нагрузки
+
+✅ Статистика использования для каждого пользователя
+
+✅ Управление избранными статьями
+
+✅ Интуитивный интерфейс с инлайн-кнопками
+
+✅ Обработка ошибок и устойчивость к сбоям
+
+✅ Нормализация URL для корректной работы ссылок
+
+🔧 Установка и запуск
+Установите зависимости:
+
+bash
+pip install python-telegram-bot sqlite3
+Настройте токен бота в bot_interface.py
+
+Запустите бота:
+
+bash
+python main_bot.py
+Документация подготовлена: News Parser Bot Team
+
+🏗 Граф архитектуры News Parser Bot
+text
+┌─────────────────────────────────────────────────────────────────┐
+│                    NEWS PARSER BOT SYSTEM                       │
+└─────────────────────────────────────────────────────────────────┘
+
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      TELEGRAM PLATFORM                          │
+│  ┌─────────────────┐    ┌─────────────────┐                     │
+│  │    Users        │◄──►│   Bot API       │                     │
+│  │                 │    │                 │                     │
+│  │ • Send commands │    │ • getUpdates()  │                     │
+│  │ • Interact with │    │ • sendMessage() │                     │
+│  │   inline buttons│    │ • editMessage() │                     │
+│  └─────────────────┘    └─────────────────┘                     │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    MAIN BOT CONTROLLER                          │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │                    main_bot.py                              │ │
+│  │  ┌─────────────────┐    ┌─────────────────┐                 │ │
+│  │  │ handle_user_    │    │ handle_callback_│                 │ │
+│  │  │ message()       │    │ query()         │                 │ │
+│  │  │                 │    │                 │                 │ │
+│  │  │ • Process text  │    │ • Process       │                 │ │
+│  │  │   commands      │    │   inline button │                 │ │
+│  │  │ • Route to      │    │   clicks        │                 │ │
+│  │  │   appropriate   │    │ • Update        │                 │ │
+│  │  │   modules       │    │   keyboards     │                 │ │
+│  │  └─────────────────┘    └─────────────────┘                 │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        ▼                     ▼                     ▼
+┌───────────────┐    ┌─────────────────┐    ┌───────────────┐
+│ NEWS PARSER   │    │ BOT INTERFACE   │    │ DATABASE      │
+│ MODULE        │    │ MODULE          │    │ MODULE        │
+├───────────────┤    ├─────────────────┤    ├───────────────┤
+│ news_parser.py│    │ bot_interface.py│    │ database.py   │
+│               │    │                 │    │               │
+│ • HTML parsing│    │ • Message       │    │ • SQLite      │
+│ • URL fetching│    │   formatting    │    │   operations  │
+│ • Data        │    │ • Inline        │    │ • User        │
+│   extraction  │    │   keyboards     │    │   management  │
+│ • URL         │    │ • Telegram API  │    │ • News caching│
+│   normalization│   │   communication │    │ • Favorites   │
+└───────────────┘    └─────────────────┘    └───────────────┘
+        │                     │                     │
+        └─────────────────────┼─────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      EXTERNAL SERVICES                          │
+│  ┌─────────────────┐    ┌─────────────────┐                     │
+│  │   itproger.com  │    │   SQLite DB     │                     │
+│  │                 │    │                 │                     │
+│  │ • News source   │    │ • Persistent    │                     │
+│  │ • Web scraping  │    │   data storage  │                     │
+│  │   target        │    │ • Local file    │                     │
+│  └─────────────────┘    └─────────────────┘                     │
+└─────────────────────────────────────────────────────────────────┘
+🔄 Граф потоков данных
+text
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   USER      │───►│ TELEGRAM    │───►│ MAIN BOT    │
+│  INPUT      │    │   API       │    │ CONTROLLER  │
+└─────────────┘    └─────────────┘    └─────────────┘
+                                              │
+                ┌─────────────┐              │
+                │ DATABASE    │◄─────────────┤
+                │ OPERATIONS  │              │
+                └─────────────┘              │
+                      │                      │
+                ┌─────────────┐              │
+                │ DATA        │              │
+                │ PROCESSING  │◄─────────────┤
+                └─────────────┘              │
+                      │                      │
+                ┌─────────────┐              │
+                │ RESPONSE    │──────────────┘
+                │ GENERATION  │
+                └─────────────┘
+                      │
+                ┌─────────────┐    ┌─────────────┐
+                │ FORMATTED   │───►│ TELEGRAM    │───►│ USER     │
+                │ OUTPUT      │    │   API       │    │ OUTPUT   │
+                └─────────────┘    └─────────────┘    └─────────────┘
+🗂 Граф модулей и зависимостей
+text
+main_bot.py (Главный контроллер)
+    ├── depends on: bot_interface.py
+    ├── depends on: database.py  
+    └── depends on: news_parser.py
+
+bot_interface.py (Интерфейс Telegram)
+    ├── provides: send_message(), create_keyboards()
+    ├── uses: news_parser.normalize_url()
+    └── communicates with: Telegram Bot API
+
+database.py (Управление данными)
+    ├── provides: user_operations(), news_caching()
+    ├── provides: favorites_management()
+    └── uses: SQLite database file
+
+news_parser.py (Парсинг новостей)
+    ├── provides: fetch_url(), parse_news()
+    ├── provides: NewsParser class
+    └── communicates with: itproger.com
+🎯 Граф функциональных возможностей
+text
+News Parser Bot
+├── 📰 News Management
+│   ├── Fetch latest news from itproger.com
+│   ├── Parse HTML content
+│   ├── Cache news data
+│   └── Refresh news on demand
+│
+├── ⭐ Favorites System
+│   ├── Add articles to favorites
+│   ├── Remove from favorites
+│   ├── View favorites list
+│   └── Clear all favorites
+│
+├── 👤 User Management
+│   ├── User registration
+│   ├── Activity tracking
+│   ├── Usage statistics
+│   └── Request logging
+│
+├── 🎨 User Interface
+│   ├── Text commands (/start, /news, etc.)
+│   ├── Inline keyboards
+│   ├── Article details view
+│   └── Navigation controls
+│
+└── 🛠 Technical Features
+    ├── Error handling
+    ├── URL normalization
+    ├── Database operations
+    └── API communication
+📊 Граф базы данных
+text
+SQLite Database (news_bot.db)
+├── users
+│   ├── user_id (PK)
+│   ├── username
+│   ├── first_name
+│   ├── last_name
+│   ├── created_at
+│   └── last_activity
+│
+├── requests
+│   ├── id (PK)
+│   ├── user_id (FK → users)
+│   ├── command
+│   └── timestamp
+│
+├── news_cache
+│   ├── id (PK)
+│   ├── title (UNIQUE)
+│   ├── description
+│   ├── source_url
+│   ├── link
+│   └── parsed_at
+│
+└── favorites
+    ├── id (PK)
+    ├── user_id (FK → users)
+    ├── news_title
+    ├── news_description
+    ├── news_link
+    └── saved_at
+Этот граф показывает:
+
+Вертикальную архитектуру от пользователя к данным
+
+Горизонтальное разделение ответственности между модулями
+
+Потоки данных между компонентами
+
+Зависимости между модулями
+
+Структуру базы данных
+
+Граф демонстрирует хорошо спроектированную модульную архитектуру с четким разделением обязанностей между компонентами.
 
 
